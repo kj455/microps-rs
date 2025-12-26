@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  microps-rs:
+    build: .
+    container_name: microps-rs
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun
+    stdin_open: true
+    tty: true
+    command: /bin/bash

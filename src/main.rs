@@ -1,3 +1,11 @@
+pub mod net;
+
 fn main() {
-    println!("Hello, world!");
+    tracing_subscriber::fmt().init();
+
+    tracing::info!("Application started");
+
+    net::init();
+    net::run();
+    net::shutdown();
 }
