@@ -1,10 +1,10 @@
 use anyhow::Result;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use crate::{
     net::{
         Device, DeviceDescriptor, DeviceOps, NET_DEVICE_FLAG_LOOPBACK, NET_DEVICE_TYPE_LOOPBACK,
-        NetDevices,
+        NetStack,
     },
     util::debugdump,
 };
@@ -12,15 +12,20 @@ use crate::{
 /// Maximum size of IP datagram
 const LOOPBACK_MTU: u16 = u16::MAX;
 
+/// Input callback type for protocol dispatching
+pub type OutputCallback = Rc<dyn Fn(u16, &[u8], DeviceDescriptor)>;
+
 /// Loopback device operations
-struct LoopbackOps {}
+struct LoopbackOps {
+    output_callback: OutputCallback,
+}
 
 impl DeviceOps for LoopbackOps {
-    fn open(&self, _dev: &mut Device) -> Result<()> {
+    fn open(&self, _dev: &Device) -> Result<()> {
         Ok(())
     }
 
-    fn close(&self, _dev: &mut Device) -> Result<()> {
+    fn close(&self, _dev: &Device) -> Result<()> {
         Ok(())
     }
 
@@ -32,12 +37,16 @@ impl DeviceOps for LoopbackOps {
             dst
         );
         debugdump(data);
-        dev.input(type_, data)
+
+        // HACK: Call the input callback for protocol dispatching
+        (self.output_callback)(type_, data, dev.descriptor);
+
+        Ok(())
     }
 }
 
 /// Initialize loopback device
-pub fn init(devices: &mut NetDevices) -> Result<DeviceDescriptor> {
+pub fn init(net_stack: &mut NetStack, output_callback: OutputCallback) -> Result<DeviceDescriptor> {
     let dev = Device {
         device_type: NET_DEVICE_TYPE_LOOPBACK,
         mtu: LOOPBACK_MTU,
@@ -46,12 +55,11 @@ pub fn init(devices: &mut NetDevices) -> Result<DeviceDescriptor> {
         ..Default::default()
     };
 
-    let descriptor = devices.register(dev)?;
+    let descriptor = net_stack.register_device(dev)?;
 
-    // Now set the ops with the device descriptor
-    if let Some(dev) = devices.get_mut(descriptor) {
-        let ops = Arc::new(LoopbackOps {});
-        dev.ops = Some(ops);
+    // Now set the ops with the device descriptor and input callback
+    if let Some(dev) = net_stack.get_device_mut(descriptor) {
+        dev.ops = Some(Box::new(LoopbackOps { output_callback }));
         tracing::info!("success, dev={}", dev.name_string());
     }
 
