@@ -82,7 +82,7 @@ impl Device {
     pub fn output(&self, device_type: u16, data: &[u8], dst: Option<&[u8]>) -> Result<()> {
         let dev_name = self.name_string();
         tracing::debug!(
-            "dev={}, type=0x{:04x}, len={}",
+            "device_output: dev={}, type=0x{:04x}, len={}",
             dev_name,
             device_type,
             data.len()
@@ -107,7 +107,7 @@ impl Device {
     /// Process input data from this device
     pub fn input(&self, type_: u16, data: &[u8]) -> Result<()> {
         tracing::debug!(
-            "dev={}, type=0x{:04x}, len={}",
+            "device_input: dev={}, type=0x{:04x}, len={}",
             self.name_string(),
             type_,
             data.len()
