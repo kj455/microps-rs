@@ -15,8 +15,10 @@ use anyhow::{Context, Result};
 use crate::context::ProtocolContexts;
 use crate::device::loopback::OutputCallback;
 use crate::device::{DeviceIndex, DeviceManager};
-use crate::iface::{IpIface, NetIface};
-use crate::protocol::{PROTOCOL_TYPE_IP, ProtocolManager};
+use crate::protocol::{
+    ProtocolManager,
+    ip::{self, IpProtocol},
+};
 
 const MAIN_LOOP_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -92,28 +94,21 @@ impl App {
         protocols: &SharedProtocolManager,
         ctx: &SharedProtocolContexts,
     ) -> Result<DeviceIndex> {
-        let devices_for_cb = Rc::clone(devices);
         let protocols_for_cb = Rc::clone(protocols);
         let ctx_for_cb = Rc::clone(ctx);
 
-        let callback: OutputCallback = Rc::new(move |type_, data, index| {
-            let devices = devices_for_cb.borrow();
+        let callback: OutputCallback = Rc::new(move |type_, data, dev| {
             let protocols = protocols_for_cb.borrow();
             let ctx = ctx_for_cb.borrow();
-
-            if let Some(dev) = devices.get(index) {
-                protocols.dispatch(type_, data, dev, &ctx);
-            }
+            protocols.dispatch(type_, data, dev, &ctx);
         });
 
         let index = device::loopback::init(&mut devices.borrow_mut(), callback)
             .context("Failed to initialize loopback device")?;
 
-        let ip_iface =
-            IpIface::new("127.0.0.1", "255.0.0.0").context("Failed to create IP interface")?;
-
+        // Register IP interface using single API (registers on both device and global registry)
         if let Some(dev) = devices.borrow_mut().get_mut(index) {
-            dev.register_iface(NetIface::Ip(ip_iface))
+            ip::register_iface(dev, "127.0.0.1", "255.0.0.0", &mut ctx.borrow_mut())
                 .context("Failed to register IP interface")?;
         }
 
@@ -121,12 +116,13 @@ impl App {
     }
 
     fn send_test_packet(&self) -> Result<()> {
+        let src = ip::IpAddr::from_str("127.0.0.1")?;
+        let dst = ip::IpAddr::from_str("127.0.0.1")?;
         let devices = self.devices.borrow();
-        let dev = devices
-            .get(self.loopback_index)
-            .ok_or_else(|| anyhow::anyhow!("Invalid device index: {}", self.loopback_index))?;
+        let ctx = self.ctx.borrow();
 
-        dev.output(PROTOCOL_TYPE_IP, TEST_ICMP_PACKET, None)
+        ip::ip_output(IpProtocol::Icmp, TEST_ICMP_PACKET, src, dst, &ctx, &devices)?;
+        Ok(())
     }
 }
 

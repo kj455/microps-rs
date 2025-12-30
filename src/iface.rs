@@ -1,6 +1,7 @@
 use anyhow::Result;
 
-use crate::protocol::ip::{ip_addr_ntop, ip_addr_pton, IpAddr};
+use crate::device::DeviceIndex;
+use crate::protocol::ip::IpAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetIfaceFamily {
@@ -13,18 +14,20 @@ pub struct IpIface {
     pub unicast: IpAddr,
     pub netmask: IpAddr,
     pub broadcast: IpAddr,
+    pub device_index: DeviceIndex,
 }
 
 impl IpIface {
-    pub fn new(unicast: &str, netmask: &str) -> Result<Self> {
-        let unicast_addr = ip_addr_pton(unicast)?;
-        let netmask_addr = ip_addr_pton(netmask)?;
+    pub fn new(unicast: &str, netmask: &str, device_index: DeviceIndex) -> Result<Self> {
+        let unicast_addr = IpAddr::from_str(unicast)?;
+        let netmask_addr = IpAddr::from_str(netmask)?;
         let broadcast_addr = (unicast_addr & netmask_addr) | !netmask_addr;
 
         Ok(IpIface {
             unicast: unicast_addr,
             netmask: netmask_addr,
             broadcast: broadcast_addr,
+            device_index,
         })
     }
 
@@ -35,9 +38,7 @@ impl IpIface {
     pub fn info(&self) -> String {
         format!(
             "unicast={}, netmask={}, broadcast={}",
-            ip_addr_ntop(self.unicast),
-            ip_addr_ntop(self.netmask),
-            ip_addr_ntop(self.broadcast)
+            self.unicast, self.netmask, self.broadcast
         )
     }
 }

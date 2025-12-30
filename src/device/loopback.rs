@@ -7,7 +7,7 @@ use crate::util::debugdump;
 const LOOPBACK_MTU: u16 = u16::MAX;
 
 // Will be replaced with IRQ-based signaling in the future
-pub type OutputCallback = Rc<dyn Fn(u16, &[u8], DeviceIndex)>;
+pub type OutputCallback = Rc<dyn Fn(u16, &[u8], &Device)>;
 
 struct LoopbackOps {
     output_callback: OutputCallback,
@@ -32,7 +32,7 @@ impl DeviceOps for LoopbackOps {
         debugdump(data);
 
         // HACK: Will be replaced with IRQ-based signaling in the future
-        (self.output_callback)(type_, data, dev.index);
+        (self.output_callback)(type_, data, dev);
 
         Ok(())
     }
