@@ -1,3 +1,4 @@
+pub mod icmp;
 pub mod ip;
 
 use anyhow::Result;

@@ -8,6 +8,7 @@ use super::{PROTOCOL_TYPE_IP, ProtocolManager, ProtocolType};
 use crate::context::ProtocolContexts;
 use crate::device::{Device, DeviceManager, NET_DEVICE_FLAG_NEED_ARP};
 use crate::iface::{IpIface, NetIface};
+use crate::protocol::icmp;
 use crate::util::{cksum16, debugdump, hton16, ntoh16};
 
 pub const IP_VERSION_IPV4: u8 = 4;
@@ -289,22 +290,9 @@ pub fn ip_input(data: &[u8], dev: &Device, _ctx: &ProtocolContexts) -> Result<()
     ip_print(data);
 
     let payload = &data[hlen..total];
-    ip_protocol_dispatch(hdr.protocol(), payload, hdr.src, hdr.dst, dev, _ctx)?;
-
-    Ok(())
-}
-
-fn ip_protocol_dispatch(
-    protocol: IpProtocol,
-    _payload: &[u8],
-    _src: IpAddr,
-    _dst: IpAddr,
-    _dev: &Device,
-    _ctx: &ProtocolContexts,
-) -> Result<()> {
-    match protocol {
+    match hdr.protocol() {
         IpProtocol::Icmp => {
-            tracing::debug!("Dispatching to ICMP (not yet implemented)");
+            icmp::input(payload, hdr.src, hdr.dst, dev, _ctx);
         }
         IpProtocol::Tcp => {
             tracing::debug!("Dispatching to TCP (not yet implemented)");
@@ -316,6 +304,7 @@ fn ip_protocol_dispatch(
             tracing::debug!("Unknown IP protocol: {}", p);
         }
     }
+
     Ok(())
 }
 
