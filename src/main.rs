@@ -1,6 +1,7 @@
-pub mod ip;
-pub mod loopback;
-pub mod net;
+pub mod context;
+pub mod device;
+pub mod iface;
+pub mod protocol;
 pub mod util;
 
 use std::cell::RefCell;
@@ -11,40 +12,59 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::loopback::OutputCallback;
-use crate::net::{DeviceDescriptor, NET_PROTOCOL_TYPE_IP, NetStack};
+use crate::context::ProtocolContexts;
+use crate::device::loopback::OutputCallback;
+use crate::device::{DeviceIndex, DeviceManager};
+use crate::iface::{IpIface, NetIface};
+use crate::protocol::{PROTOCOL_TYPE_IP, ProtocolManager};
 
 const MAIN_LOOP_INTERVAL: Duration = Duration::from_secs(1);
 
-/// ICMP Echo Request packet (localhost to localhost)
-/// IPv4 header + ICMP header + payload data
 const TEST_ICMP_PACKET: &[u8] = &[
     0x45, 0x00, 0x00, 0x30, 0x00, 0x80, 0x00, 0x00, 0xff, 0x01, 0xbd, 0x4a, 0x7f, 0x00, 0x00, 0x01,
     0x7f, 0x00, 0x00, 0x01, 0x08, 0x00, 0x35, 0x64, 0x00, 0x80, 0x00, 0x01, 0x31, 0x32, 0x33, 0x34,
     0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x21, 0x40, 0x23, 0x24, 0x25, 0x5e, 0x26, 0x2a, 0x28, 0x29,
 ];
 
-type SharedNetStack = Rc<RefCell<NetStack>>;
+type SharedDeviceManager = Rc<RefCell<DeviceManager>>;
+type SharedProtocolManager = Rc<RefCell<ProtocolManager>>;
+type SharedProtocolContexts = Rc<RefCell<ProtocolContexts>>;
 
 struct App {
-    net_stack: SharedNetStack,
+    devices: SharedDeviceManager,
+    protocols: SharedProtocolManager,
+    ctx: SharedProtocolContexts,
     terminate: Arc<AtomicBool>,
-    loopback_descriptor: DeviceDescriptor,
+    loopback_index: DeviceIndex,
 }
 
 impl App {
     fn new() -> Result<Self> {
         let terminate = Arc::new(AtomicBool::new(false));
-        let net_stack = Rc::new(RefCell::new(NetStack::new()));
+        let devices = Rc::new(RefCell::new(DeviceManager::new()));
+        let protocols = Rc::new(RefCell::new(ProtocolManager::new()));
+        let ctx = Rc::new(RefCell::new(ProtocolContexts::new()));
 
         Self::setup_signal_handler(Arc::clone(&terminate))?;
-        let loopback_descriptor = Self::setup_loopback(&net_stack)?;
-        net_stack.borrow_mut().run().context("net::run() failure")?;
+
+        protocols
+            .borrow_mut()
+            .init()
+            .context("Failed to initialize protocols")?;
+
+        let loopback_index = Self::setup_loopback(&devices, &protocols, &ctx)?;
+
+        devices
+            .borrow_mut()
+            .run()
+            .context("Failed to start devices")?;
 
         Ok(Self {
-            net_stack,
+            devices,
+            protocols,
+            ctx,
             terminate,
-            loopback_descriptor,
+            loopback_index,
         })
     }
 
@@ -67,42 +87,56 @@ impl App {
         .context("Failed to set signal handler")
     }
 
-    fn setup_loopback(net_stack: &SharedNetStack) -> Result<DeviceDescriptor> {
-        let net_stack_for_callback = Rc::clone(net_stack);
-        let callback: OutputCallback = Rc::new(move |type_, data, descriptor| {
-            let stack = net_stack_for_callback.borrow();
-            if let Err(e) = stack.input(type_, data, descriptor) {
-                tracing::error!("Failed to process input: {:?}", e);
+    fn setup_loopback(
+        devices: &SharedDeviceManager,
+        protocols: &SharedProtocolManager,
+        ctx: &SharedProtocolContexts,
+    ) -> Result<DeviceIndex> {
+        let devices_for_cb = Rc::clone(devices);
+        let protocols_for_cb = Rc::clone(protocols);
+        let ctx_for_cb = Rc::clone(ctx);
+
+        let callback: OutputCallback = Rc::new(move |type_, data, index| {
+            let devices = devices_for_cb.borrow();
+            let protocols = protocols_for_cb.borrow();
+            let ctx = ctx_for_cb.borrow();
+
+            if let Some(dev) = devices.get(index) {
+                protocols.dispatch(type_, data, dev, &ctx);
             }
         });
 
-        net_stack
-            .borrow_mut()
-            .init()
-            .context("net::init() failure")?;
+        let index = device::loopback::init(&mut devices.borrow_mut(), callback)
+            .context("Failed to initialize loopback device")?;
 
-        loopback::init(&mut net_stack.borrow_mut(), callback).context("loopback::init() failure")
+        let ip_iface =
+            IpIface::new("127.0.0.1", "255.0.0.0").context("Failed to create IP interface")?;
+
+        if let Some(dev) = devices.borrow_mut().get_mut(index) {
+            dev.register_iface(NetIface::Ip(ip_iface))
+                .context("Failed to register IP interface")?;
+        }
+
+        Ok(index)
     }
 
     fn send_test_packet(&self) -> Result<()> {
-        let stack = self.net_stack.borrow();
-        let dev = stack.get_device(self.loopback_descriptor).ok_or_else(|| {
-            anyhow::anyhow!("Invalid device descriptor: {}", self.loopback_descriptor)
-        })?;
+        let devices = self.devices.borrow();
+        let dev = devices
+            .get(self.loopback_index)
+            .ok_or_else(|| anyhow::anyhow!("Invalid device index: {}", self.loopback_index))?;
 
-        dev.output(NET_PROTOCOL_TYPE_IP, TEST_ICMP_PACKET, None)
+        dev.output(PROTOCOL_TYPE_IP, TEST_ICMP_PACKET, None)
     }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
-        if let Err(e) = self.net_stack.borrow_mut().shutdown() {
+        if let Err(e) = self.devices.borrow_mut().shutdown() {
             tracing::error!("Shutdown failed: {:?}", e);
         }
     }
 }
-
-// --- エントリポイント ---
 
 fn main() -> Result<()> {
     init_logging();
