@@ -1,11 +1,9 @@
 use std::fmt;
 
-use anyhow::Result;
-
 use crate::context::ProtocolContexts;
 use crate::device::Device;
 use crate::protocol::ip::IpAddr;
-use crate::util::{cksum16, debugdump};
+use crate::util::{cksum16, debugdump, ntoh16, ntoh32};
 
 pub const ICMP_HDR_SIZE: usize = 8;
 
@@ -109,37 +107,66 @@ impl fmt::Display for IcmpHdr {
     }
 }
 
-/// Print ICMP header information for debugging
-fn icmp_print(hdr: &IcmpHdr, data: &[u8]) {
-    let type_name = match hdr.type_enum() {
-        Some(IcmpType::Echo) => "Echo Request",
-        Some(IcmpType::EchoReply) => "Echo Reply",
-        Some(IcmpType::DestUnreachable) => "Destination Unreachable",
-        Some(IcmpType::TimeExceeded) => "Time Exceeded",
+/// Get ICMP type name string
+fn icmp_type_ntoa(type_: u8) -> &'static str {
+    match IcmpType::from_u8(type_) {
+        Some(IcmpType::EchoReply) => "EchoReply",
+        Some(IcmpType::DestUnreachable) => "DestinationUnreachable",
+        Some(IcmpType::SourceQuench) => "SourceQuench",
         Some(IcmpType::Redirect) => "Redirect",
-        Some(IcmpType::SourceQuench) => "Source Quench",
-        Some(IcmpType::ParameterProblem) => "Parameter Problem",
+        Some(IcmpType::Echo) => "Echo",
+        Some(IcmpType::TimeExceeded) => "TimeExceeded",
+        Some(IcmpType::ParameterProblem) => "ParameterProblem",
         Some(IcmpType::Timestamp) => "Timestamp",
-        Some(IcmpType::TimestampReply) => "Timestamp Reply",
-        Some(IcmpType::InfoRequest) => "Info Request",
-        Some(IcmpType::InfoReply) => "Info Reply",
+        Some(IcmpType::TimestampReply) => "TimestampReply",
+        Some(IcmpType::InfoRequest) => "InformationRequest",
+        Some(IcmpType::InfoReply) => "InformationReply",
         None => "Unknown",
+    }
+}
+
+/// Print ICMP header information for debugging
+fn icmp_print(data: &[u8]) {
+    let Some(hdr) = IcmpHdr::from_bytes(data) else {
+        return;
     };
 
-    tracing::info!("ICMP Header: {} ({})", hdr, type_name);
+    tracing::debug!("   type: {} ({})", hdr.type_, icmp_type_ntoa(hdr.type_));
+    tracing::debug!("   code: {}", hdr.code);
+    tracing::debug!("    sum: {:#06x}", ntoh16(hdr.sum));
+
+    match hdr.type_enum() {
+        Some(IcmpType::EchoReply) | Some(IcmpType::Echo) => {
+            tracing::debug!("     id: {}", hdr.echo_id());
+            tracing::debug!("    seq: {}", hdr.echo_seq());
+        }
+        Some(IcmpType::DestUnreachable) => {
+            tracing::debug!(" unused: {}", ntoh32(hdr.values));
+        }
+        _ => {
+            tracing::debug!("    dep: {:#010x}", ntoh32(hdr.values));
+        }
+    }
+
     debugdump(data);
 }
 
-pub fn input(data: &[u8], src: IpAddr, dst: IpAddr, dev: &Device, _ctx: &ProtocolContexts) {
-    tracing::debug!(
-        "icmp_input: dev={}, src={}, dst={}, len={}",
-        dev.name_string(),
-        src,
-        dst,
-        data.len()
-    );
+pub fn input(data: &[u8], src: IpAddr, dst: IpAddr, _dev: &Device, _ctx: &ProtocolContexts) {
+    // Validate minimum header size
+    if data.len() < ICMP_HDR_SIZE {
+        tracing::error!("icmp_input: too short, len={}", data.len());
+        return;
+    }
 
-    // TODO: implement
+    // Verify checksum
+    if cksum16(data, 0) != 0 {
+        tracing::error!("icmp_input: checksum error");
+        return;
+    }
+
+    tracing::debug!("{} => {}, len={}", src, dst, data.len());
+
+    icmp_print(data);
 }
 
 #[cfg(test)]
@@ -185,5 +212,14 @@ mod tests {
         assert_eq!(IcmpType::from_u8(8), Some(IcmpType::Echo));
         assert_eq!(IcmpType::from_u8(3), Some(IcmpType::DestUnreachable));
         assert_eq!(IcmpType::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_icmp_type_ntoa() {
+        assert_eq!(icmp_type_ntoa(0), "EchoReply");
+        assert_eq!(icmp_type_ntoa(3), "DestinationUnreachable");
+        assert_eq!(icmp_type_ntoa(8), "Echo");
+        assert_eq!(icmp_type_ntoa(11), "TimeExceeded");
+        assert_eq!(icmp_type_ntoa(255), "Unknown");
     }
 }
